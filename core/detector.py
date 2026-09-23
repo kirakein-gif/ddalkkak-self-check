@@ -14,7 +14,7 @@ def _sample_text(book: WorkbookData) -> str:
     parts: list[str] = []
     for name, rows in book.sheets.items():
         parts.append(name)
-        for row in rows[:40]:
+        for row in rows[:45]:
             parts.extend(str(v) for v in row if v not in (None, ""))
     return compact(" ".join(parts))
 
@@ -24,7 +24,7 @@ def _count_markers(sample: str, markers: tuple[str, ...]) -> int:
 
 
 def detect_type(book: WorkbookData) -> str:
-    """파일명이나 금액 규모가 아니라 문서 내부 구조로 자료 종류를 판별한다."""
+    """파일명/금액규모가 아니라 문서 내부 구조로 자료 종류를 판별한다."""
     sample = _sample_text(book)
 
     bank_markers = ("계좌번호", "조회기간", "거래일자", "거래후잔액", "거래내용")
@@ -53,18 +53,10 @@ def detect_type(book: WorkbookData) -> str:
 
     if _count_markers(sample, bank_markers) >= 4:
         return BANK
-
-    if (
-        "세입세출외현금출납계산서" in sample
-        or _count_markers(sample, statement_markers) >= 4
-    ):
+    if "세입세출외현금출납계산서" in sample or _count_markers(sample, statement_markers) >= 4:
         return OUTSIDE_STATEMENT
-
     if _count_markers(sample, outside_markers) >= 5:
         return OUTSIDE_LEDGER
-
-    # 학교회계/세외 모두 시트명이 '현금출납부'일 수 있으므로
-    # 시트명 대신 학교회계 고유 열 이름을 사용한다.
     if (
         _count_markers(sample, school_markers) >= 2
         and "수입액" in sample
@@ -72,5 +64,17 @@ def detect_type(book: WorkbookData) -> str:
         and "잔액" in sample
     ):
         return SCHOOL_LEDGER
+    return UNKNOWN
 
+
+def detect_pdf_text(text: str) -> str:
+    sample = compact(text)
+    if "세입세출외현금출납계산서" in sample:
+        return OUTSIDE_STATEMENT
+    if "세입세출외현금현금출납부" in sample or (
+        "수입액(1)" in sample and "지급액(2)" in sample and "결의번호" in sample
+    ):
+        return OUTSIDE_LEDGER
+    if "현금출납부" in sample and "세부사업명" in sample and "수입액" in sample and "지출액" in sample:
+        return SCHOOL_LEDGER
     return UNKNOWN

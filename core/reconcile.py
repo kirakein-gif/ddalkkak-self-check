@@ -36,9 +36,16 @@ class Reconciliation:
     reference_date: datetime | None = None
 
     @property
+    def cashbook_ok(self) -> bool:
+        return len(self.checks) >= 2 and all(x.ok for x in self.checks)
+
+    @property
+    def card_ok(self) -> bool:
+        return bool(self.card_checks) and all(x.ok for x in self.card_checks)
+
+    @property
     def all_ok(self) -> bool:
-        required = len(self.checks) >= 2
-        return required and all(x.ok for x in self.checks) and all(x.ok for x in self.card_checks)
+        return self.cashbook_ok and self.card_ok
 
 
 def _reference_date(
@@ -55,24 +62,18 @@ def _reference_date(
         )
         if value is not None
     ]
-    if not dates:
+    return max(dates) if dates else None
+
+
+def balance_at_or_before(bank: BankStatement | None, target: datetime | None) -> int | None:
+    if bank is None:
         return None
-    return max(dates)
-
-
-def _balance_at_or_before(bank: BankStatement, target: datetime | None) -> int | None:
-    """현재통화잔액이 아니라 점검 기준일의 마지막 거래후잔액을 사용한다."""
     if target is None:
         return bank.closing_balance
-
-    eligible = [
-        tx
-        for tx in bank.transactions
-        if tx.occurred_at is not None and tx.occurred_at <= target.replace(hour=23, minute=59, second=59)
-    ]
+    cutoff = target.replace(hour=23, minute=59, second=59)
+    eligible = [tx for tx in bank.transactions if tx.occurred_at is not None and tx.occurred_at <= cutoff]
     if not eligible:
         return None
-
     latest = max(eligible, key=lambda tx: tx.occurred_at or datetime.min)
     return latest.balance
 
@@ -84,8 +85,7 @@ def reconcile(
     outside_statement: OutsideCashStatement | None,
     fixed_deposit: int = 0,
 ) -> Reconciliation:
-    result = Reconciliation()
-    result.reference_date = _reference_date(school, outside, outside_statement)
+    result = Reconciliation(reference_date=_reference_date(school, outside, outside_statement))
 
     non_card: list[BankStatement] = []
     for bank in banks:
@@ -94,47 +94,46 @@ def reconcile(
         else:
             non_card.append(bank)
 
-    bank_balances: dict[str, int | None] = {
-        bank.filename: _balance_at_or_before(bank, result.reference_date)
-        for bank in non_card
-    }
+    unmatched = list(non_card)
 
-    for bank in non_card:
-        bal = bank_balances[bank.filename]
+    # 1) 정확 일치 매칭: 금액 규모 추정은 하지 않는다.
+    if school:
+        for bank in list(unmatched):
+            bal = balance_at_or_before(bank, result.reference_date)
+            if bal is not None and bal + fixed_deposit == school.balance:
+                result.school_bank = bank
+                unmatched.remove(bank)
+                break
 
-        # 금액 "규모"로 유형을 추정하지 않는다.
-        # 장부의 기준일 잔액과 정확히 일치하는 통장을 매칭한다.
-        if (
-            school
-            and bal is not None
-            and bal + fixed_deposit == school.balance
-            and result.school_bank is None
-        ):
-            result.school_bank = bank
-        elif (
-            outside
-            and bal is not None
-            and bal == outside.balance
-            and result.outside_bank is None
-        ):
-            result.outside_bank = bank
-        elif (
-            outside_statement
-            and bal is not None
-            and bal == outside_statement.total_balance
-            and result.outside_bank is None
-        ):
-            result.outside_bank = bank
-        else:
-            result.unknown_banks.append(bank)
+    if outside:
+        for bank in list(unmatched):
+            bal = balance_at_or_before(bank, result.reference_date)
+            if bal is not None and bal == outside.balance:
+                result.outside_bank = bank
+                unmatched.remove(bank)
+                break
+
+    if result.outside_bank is None and outside_statement:
+        for bank in list(unmatched):
+            bal = balance_at_or_before(bank, result.reference_date)
+            if bal is not None and bal == outside_statement.total_balance:
+                result.outside_bank = bank
+                unmatched.remove(bank)
+                break
+
+    # If exactly one of the two non-card accounts matched, the one remaining account
+    # can be assigned by elimination. This is not a money-size guess and allows
+    # school-account fixed deposits to be entered after upload.
+    if result.school_bank is None and result.outside_bank is not None and len(unmatched) == 1:
+        result.school_bank = unmatched.pop(0)
+    elif result.outside_bank is None and result.school_bank is not None and len(unmatched) == 1:
+        result.outside_bank = unmatched.pop(0)
+
+    result.unknown_banks.extend(unmatched)
 
     if school:
-        bank_balance = (
-            _balance_at_or_before(result.school_bank, result.reference_date)
-            if result.school_bank
-            else None
-        )
-        bank_total = None if bank_balance is None else bank_balance + fixed_deposit
+        base = balance_at_or_before(result.school_bank, result.reference_date)
+        bank_total = None if base is None else base + fixed_deposit
         diff = None if bank_total is None else school.balance - bank_total
         result.checks.append(
             CheckLine(
@@ -152,14 +151,10 @@ def reconcile(
         )
 
     if outside:
-        bank_total = (
-            _balance_at_or_before(result.outside_bank, result.reference_date)
-            if result.outside_bank
-            else None
-        )
+        bank_total = balance_at_or_before(result.outside_bank, result.reference_date)
         diff = None if bank_total is None else outside.balance - bank_total
-        statement_note = ""
         ok = diff == 0
+        statement_note = ""
         if outside_statement:
             statement_diff = outside.balance - outside_statement.total_balance
             ok = ok and statement_diff == 0
@@ -180,18 +175,14 @@ def reconcile(
         for tx in bank.transactions:
             if tx.occurred_at is None:
                 continue
-
-            # 월 전체 법인카드 파일 1개를 넣어도 기준월의 결제 건만 사용한다.
             if result.reference_date and (
                 tx.occurred_at.year != result.reference_date.year
                 or tx.occurred_at.month != result.reference_date.month
             ):
                 continue
-
             joined = f"{tx.description} {tx.memo}".replace(" ", "").upper()
             if not ("비씨대금" in joined or "NHBC기업카드" in joined):
                 continue
-
             d = tx.occurred_at.strftime("%Y-%m-%d")
             key = (d, tx.withdrawal, bank.filename)
             if key in seen:
@@ -206,6 +197,5 @@ def reconcile(
                     source=bank.filename,
                 )
             )
-
     result.card_checks.sort(key=lambda x: x.date)
     return result

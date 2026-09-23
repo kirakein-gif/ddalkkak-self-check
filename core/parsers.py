@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -30,18 +31,46 @@ def _index_by_contains(row: list[Any], term: str) -> int | None:
 
 def _value_after_label(rows: list[list[Any]], label: str) -> Any:
     target = compact(label)
-    for row in rows[:25]:
+    for row in rows[:30]:
         for i, value in enumerate(row):
             if compact(value) == target:
-                return next_nonempty(row, i, 7)
+                return next_nonempty(row, i, 8)
     return None
+
+
+def _find_label_text(rows: list[list[Any]], label: str) -> str:
+    target = compact(label)
+    for row in rows[:30]:
+        for i, value in enumerate(row):
+            v = compact(value)
+            if target in v:
+                # label and value can live in the same cell
+                raw = text(value)
+                rest = re.sub(re.escape(label), "", raw, count=1).strip(" :")
+                if rest:
+                    return rest
+                nxt = next_nonempty(row, i, 8)
+                return text(nxt)
+    return ""
 
 
 def parse_bank_statement(book: WorkbookData) -> BankStatement:
     rows = _main_rows(book)
     account = text(_value_after_label(rows, "계좌번호"))
+    holder = text(_value_after_label(rows, "예금주명"))
+    account_type = text(_value_after_label(rows, "예금종류"))
     period = text(_value_after_label(rows, "조회기간"))
     current_balance = money(_value_after_label(rows, "현재통화잔액"))
+
+    generated_at = None
+    generated_raw = _find_label_text(rows, "현재시간")
+    if generated_raw:
+        m = re.search(
+            r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일\s*(\d{1,2})시\s*(\d{1,2})분(?:\s*(\d{1,2})초)?",
+            generated_raw,
+        )
+        if m:
+            generated_at = datetime(*[int(x or 0) for x in m.groups()])
 
     header_hit = find_row(rows, ["거래일자", "출금금액", "입금금액", "거래후잔액", "거래내용"])
     if not header_hit:
@@ -81,7 +110,10 @@ def parse_bank_statement(book: WorkbookData) -> BankStatement:
     return BankStatement(
         filename=book.filename,
         account_number=account,
+        account_holder=holder,
+        account_type=account_type,
         period=period,
+        generated_at=generated_at,
         current_balance=current_balance,
         closing_balance=closing,
         closing_at=closing_at,
@@ -122,6 +154,7 @@ def parse_school_ledger(book: WorkbookData) -> LedgerSummary:
         expense=money(total_row[ce]) if ce is not None else 0,
         balance=money(total_row[cb]) if cb is not None else 0,
         as_of=last_date,
+        source_format="excel",
     )
 
 
@@ -158,6 +191,7 @@ def parse_outside_ledger(book: WorkbookData) -> LedgerSummary:
         expense=money(total_row[ce]) if ce is not None else 0,
         balance=money(total_row[cb]) if cb is not None else 0,
         as_of=last_date,
+        source_format="excel",
     )
 
 
@@ -170,14 +204,6 @@ def _outside_group(name: str) -> str:
 
 def parse_outside_statement(book: WorkbookData) -> OutsideCashStatement:
     rows = _main_rows(book)
-    title_idx = None
-    for i, row in enumerate(rows):
-        if "세입세출외현금출납계산서" in "".join(compact(v) for v in row):
-            title_idx = i
-            break
-    if title_idx is None:
-        raise ValueError("세입세출외현금 출납계산서 제목을 찾지 못했습니다.")
-
     header_hit = find_row(rows, ["세외종목", "반환금액", "잔액"])
     if not header_hit:
         raise ValueError("세입세출외현금 출납계산서 머리글을 찾지 못했습니다.")
@@ -200,7 +226,7 @@ def parse_outside_statement(book: WorkbookData) -> OutsideCashStatement:
             categories.append(OutsideCashCategory(name=name, balance=bal, group=_outside_group(name)))
 
     as_of = None
-    for row in rows[:10]:
+    for row in rows[:12]:
         for value in row:
             dt = parse_datetime(value)
             if dt:
@@ -213,4 +239,5 @@ def parse_outside_statement(book: WorkbookData) -> OutsideCashStatement:
         total_balance=total_balance,
         categories=categories,
         as_of=as_of,
+        source_format="excel",
     )

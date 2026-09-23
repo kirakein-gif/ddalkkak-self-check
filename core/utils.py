@@ -35,6 +35,7 @@ def parse_datetime(value: Any) -> datetime | None:
     if isinstance(value, date):
         return datetime.combine(value, datetime.min.time())
     if isinstance(value, (int, float)) and 30000 <= float(value) <= 70000:
+        # Excel serial date (1900 date system)
         return datetime(1899, 12, 30) + timedelta(days=float(value))
     s = text(value)
     for fmt in (
