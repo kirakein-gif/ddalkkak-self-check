@@ -37,7 +37,7 @@ st.markdown(
 <div class="dd-hero">
   <div class="dd-brand">DDALKKAK · SELF CHECK</div>
   <div class="dd-title">자율적 내부점검 딸깍</div>
-  <p class="dd-desc">농협 통장거래내역과 K-에듀파인 자료를 한꺼번에 넣으면 파일을 자동으로 구분하고 장부와 통장 잔액을 대조합니다.</p>
+  <p class="dd-desc">농협 통장거래내역과 K-에듀파인 자료를 한꺼번에 넣으면 파일명을 바꾸지 않아도 문서 구조를 읽어 자동으로 구분하고 장부와 통장 잔액을 대조합니다.</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -55,7 +55,7 @@ with st.expander("기본 설정", expanded=False):
 
 st.subheader("1. 점검자료 넣기")
 st.markdown(
-    '<div class="dd-note">농협과 K-에듀파인에서 내려받은 <b>.xls / .xlsx 파일을 수정하지 말고 그대로</b> 한꺼번에 선택하세요. 법인카드는 월 전체 거래내역 1개를 권장합니다.</div>',
+    '<div class="dd-note">농협과 K-에듀파인에서 내려받은 <b>.xls / .xlsx 파일을 수정하지 말고 그대로</b> 한꺼번에 선택하세요. 파일명은 사용하지 않고 내부 열 구조와 기준일 잔액으로 구분합니다. 법인카드는 월 전체 거래내역 1개를 권장합니다.</div>',
     unsafe_allow_html=True,
 )
 
@@ -87,7 +87,7 @@ for uploaded in uploads:
             banks.append(parsed)
             detail = (
                 f"계좌 {parsed.account_number or '확인 중'} · "
-                f"최종잔액 {parsed.closing_balance or 0:,}원"
+                f"파일 내 마지막 거래잔액 {parsed.closing_balance or 0:,}원"
             )
         elif kind == SCHOOL_LEDGER:
             school = parse_school_ledger(book)
@@ -135,6 +135,12 @@ rec = reconcile(
 )
 
 st.subheader("3. 자동 대조 결과")
+if rec.reference_date:
+    st.caption(
+        f"점검 기준일: {rec.reference_date:%Y-%m-%d} · "
+        "농협의 현재통화잔액이 아니라 기준일의 마지막 거래후잔액을 사용합니다."
+    )
+
 cols = st.columns(max(1, len(rec.checks)))
 for col, check in zip(cols, rec.checks):
     with col:
@@ -167,8 +173,8 @@ else:
 
 if rec.unknown_banks:
     st.warning(
-        "장부잔액과 자동 매칭되지 않은 통장자료가 있습니다. "
-        "이후 버전에서 수동 지정 보조 기능을 추가할 예정입니다."
+        "기준일 장부잔액과 자동 매칭되지 않은 통장자료가 있습니다. "
+        "금액 규모로 억지 추정하지 않고 확인 대상으로 남겼습니다."
     )
 
 st.subheader("4. 결과 받기")
@@ -183,6 +189,6 @@ st.download_button(
 )
 
 st.caption(
-    "현재 1차 버전은 파일 자동판별·잔액대조·법인카드 결제후 잔액 확인까지 구현했습니다. "
-    "내부점검보고서 PDF와 통장사본 정리 PDF는 다음 단계에서 기존 v7 양식을 기준으로 붙입니다."
+    "현재 1차 버전은 파일 자동판별·기준일 잔액대조·법인카드 결제후 잔액 확인까지 구현했습니다. "
+    "내부점검보고서 PDF와 통장사본 정리 PDF는 제공된 샘플 양식을 기준으로 다음 단계에서 붙입니다."
 )
